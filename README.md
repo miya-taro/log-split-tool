@@ -6,21 +6,27 @@
 
 常時稼働しているアプリケーションや MQTT ブローカー、API サービスなどのログは継続的に追記されるため、試験ごとにログファイルを分離することが難しい場合があります。本ツールは、試験開始・終了時にログへマーカーを埋め込み、後から試験単位のエビデンスファイルを自動生成します。
 
+複数のログファイルを同時対象にできるため、アプリログ・MQTTログ・APIログをまとめて1回の操作でエビデンス取得できます。
+
 ```
 [試験担当者]
     |
     | 1. run_test_with_marker.sh を実行
     v
-[ログ]  ... [TEST_MARKER_START] test_id=TEST_20260526_... ...
-            (試験対象の操作・コマンド)
-            [TEST_MARKER_END]   test_id=TEST_20260526_... ...
+[app.log]   ... [TEST_MARKER_START] test_id=TEST_... ...
+                (アプリが出力するログ)
+                [TEST_MARKER_END]   test_id=TEST_... ...
+
+[mqtt.log]  ... [TEST_MARKER_START] test_id=TEST_... ...
+                (MQTT ブローカーのログ)
+                [TEST_MARKER_END]   test_id=TEST_... ...
     |
     | 2. extract_evidence.sh を実行
     v
 [evidence/]
-    ├── evidence_TEST_20260526_..._API.log
-    ├── evidence_TEST_20260526_..._DB.log
-    └── summary.txt
+    └── evidence_TEST_20260526_..._API/
+        ├── app.log
+        └── mqtt.log
 ```
 
 ## ディレクトリ構成
@@ -34,7 +40,9 @@ log-split-tool/
 ├── markers/                      # 試験識別子管理ファイル出力先 (実行時に生成)
 │   └── test_markers.csv
 └── evidence/                     # エビデンスファイル出力先 (実行時に生成)
-    ├── evidence_<TEST_ID>.log
+    ├── evidence_<TEST_ID>/
+    │   ├── app.log
+    │   └── mqtt.log
     └── summary.txt
 ```
 
@@ -55,15 +63,41 @@ cd log-split-tool
 chmod +x run_test_with_marker.sh extract_evidence.sh
 ```
 
-設定ファイルを環境に合わせて編集します。
+`config/settings.env` を環境に合わせて編集します。
 
 ```bash
 vi config/settings.env
 ```
 
-## 使い方
+## 基本的な使い方（2ステップ）
 
-### 1. 試験の実行（マーカー出力）
+### ステップ1: 設定ファイルにログファイルを列挙する
+
+```bash
+# config/settings.env
+LOG_TYPE=file
+LOG_FILES=(
+  "/var/log/app.log"
+  "/var/log/mqtt.log"
+  "/var/log/api.log"
+)
+```
+
+### ステップ2: 試験実行 → エビデンス抽出
+
+```bash
+# 試験実行（全ファイルに同時にマーカーが書き込まれる）
+./run_test_with_marker.sh -n "API疎通試験"
+
+# エビデンス抽出（全ファイルから自動抽出）
+./extract_evidence.sh -m markers/test_markers.csv
+```
+
+---
+
+## 詳細
+
+### run_test_with_marker.sh
 
 ```bash
 ./run_test_with_marker.sh -n <試験名> [オプション] [-- コマンド]
@@ -74,65 +108,50 @@ vi config/settings.env
 | `-n`, `--name` | 試験名称（必須） | — |
 | `-t`, `--tester` | 実施者名 | OS ユーザー名 |
 | `-l`, `--log-type` | ログ種別: `syslog` \| `journald` \| `file` \| `stdout` | `syslog` |
-| `-f`, `--log-file` | `file` モード時の出力先パス | `/tmp/test_marker.log` |
 | `-m`, `--markers` | 識別子管理ファイルパス | `markers/test_markers.csv` |
 
-**実行例**
+**コマンドあり（自動実行）**
 
 ```bash
-# API の疎通確認（syslog に記録）
+# コマンドの成否が試験結果（OK/NG）に反映される
 ./run_test_with_marker.sh -n "API疎通試験" -- curl -s http://localhost:8080/health
-
-# ファイルにマーカーを書く場合
-./run_test_with_marker.sh -n "MQTT接続確認" -t yamada -l file -f /var/log/myapp/app.log -- ./scenario_mqtt.sh
 
 # 複数コマンドは && か ; で連結
 ./run_test_with_marker.sh -n "複合試験" -- "cmd1 && cmd2"
+
+# シェルスクリプトを渡すことも可能
+./run_test_with_marker.sh -n "MQTT接続確認" -t yamada -- ./scenario_mqtt.sh
 ```
 
-実行後、試験識別子と次のステップが表示されます。
-
-```
-========================================
- 試験終了
-  試験ID   : TEST_20260526_225553_435_API
-  終了時刻 : 2026-05-26T22:55:53
-  結果     : OK
-========================================
-
-次のステップ:
-  エビデンス抽出: ./extract_evidence.sh -m markers/test_markers.csv -l <ログファイルパス>
-  試験ID         : TEST_20260526_225553_435_API
-```
-
-### 2. エビデンスの抽出
+**コマンドなし（手動操作モード）**
 
 ```bash
-./extract_evidence.sh -m <管理ファイル> -l <ログファイル> [オプション]
+./run_test_with_marker.sh -n "手動疎通確認"
+```
+
+```
+試験を実施してください。
+  完了 → Enter
+  失敗 → f + Enter
+  中断 → Ctrl+C
+```
+
+### extract_evidence.sh
+
+```bash
+./extract_evidence.sh -m <管理ファイル> [オプション]
 ```
 
 | オプション | 説明 | デフォルト |
 |---|---|---|
 | `-m`, `--markers` | 識別子管理ファイルパス（必須） | — |
-| `-l`, `--log` | 対象ログファイルパス | — |
-| `-j`, `--journalctl` | journalctl から取得（`-l` の代わりに使用） | — |
+| `-l`, `--log` | 対象ログファイルパス（`LOG_FILES` より優先） | — |
+| `-j`, `--journalctl` | journalctl から取得 | — |
 | `-o`, `--output` | エビデンス出力先ディレクトリ | `evidence/` |
 | `-e`, `--mode` | 抽出モード: `strict` \| `loose` | `strict` |
 | `-i`, `--id` | 特定の試験 ID のみ抽出 | 全件 |
 
-**実行例**
-
-```bash
-# syslog から全試験を抽出
-./extract_evidence.sh -m markers/test_markers.csv -l /var/log/syslog -o evidence/
-
-# journalctl から抽出
-./extract_evidence.sh -m markers/test_markers.csv --journalctl -o evidence/
-
-# 特定 ID のみ抽出
-./extract_evidence.sh -m markers/test_markers.csv -l /var/log/syslog \
-  -i TEST_20260526_225553_435_API
-```
+**ログソースの優先順位:** `--journalctl` > `-l` > `config/settings.env の LOG_FILES`
 
 **抽出モード**
 
@@ -141,35 +160,72 @@ vi config/settings.env
 | `strict`（デフォルト）| 次のマーカー直前まで抽出 |
 | `loose` | 開始マーカーから `FALLBACK_LINES`（デフォルト 500）行を抽出 |
 
-### 3. 結果の確認
+### 出力ファイル構成
+
+**複数ファイル時（LOG_FILES 使用）**
 
 ```
 evidence/
-├── evidence_TEST_20260526_225553_435_API.log   # 試験別エビデンス
-├── evidence_TEST_20260526_225553_456_DB.log
-└── summary.txt                                 # 抽出結果サマリ
+├── evidence_TEST_20260526_..._API/   # 試験 ID ごとのサブディレクトリ
+│   ├── app.log
+│   └── mqtt.log
+└── summary.txt
 ```
 
-`summary.txt` の例:
+**単一ファイル時（-l 指定）**
+
+```
+evidence/
+├── evidence_TEST_20260526_..._API.log
+└── summary.txt
+```
+
+**summary.txt の例**
 
 ```
 ========================================
   エビデンス抽出サマリ
   実行日時: 2026-05-26T22:57:09
-  ログソース: /var/log/syslog
+  ログソース:
+    - app.log
+    - mqtt.log
 ========================================
 
-[OK]          TEST_20260526_225553_435_API          -> evidence_TEST_20260526_225553_435_API.log
-[OK]          TEST_20260526_225553_456_DB            -> evidence_TEST_20260526_225553_456_DB.log
-[INCOMPLETE]  TEST_20260526_999999_99_ABORT          -> evidence_TEST_..._ABORT.log ※終了マーカーなし
+  TEST_20260526_225553_435_API (API疎通試験)
+    [OK]         app.log                        -> app.log
+    [OK]         mqtt.log                       -> mqtt.log
+
+  TEST_20260526_999999_99_ABORT (ABORT試験)
+    [INCOMPLETE] app.log                        -> app.log ※終了マーカーなし
 
 ----------------------------------------
-  合計   : 3
-  成功   : 2
+  合計   : 2
+  成功   : 1
   不完全 : 1
   失敗   : 0
 ----------------------------------------
 ```
+
+## 設定ファイル（config/settings.env）
+
+```bash
+# ログ種別: syslog | journald | file | stdout
+LOG_TYPE=file
+
+# マーカーを書き込む対象ログファイル（複数指定可）
+LOG_FILES=(
+  "/var/log/app.log"
+  "/var/log/mqtt.log"
+)
+
+# 抽出モード: strict | loose
+EXTRACT_MODE=strict
+
+# 終了マーカーなし時のフォールバック行数
+FALLBACK_LINES=500
+```
+
+すべての設定は環境変数でも上書き可能です（優先順位: 環境変数 > settings.env > デフォルト値）。
 
 ## 試験識別子の形式
 
@@ -193,18 +249,3 @@ TEST_YYYYMMDD_HHMMSS_PID_SLUG
 ## 異常終了時の動作
 
 スクリプトが途中で強制終了（Ctrl+C、エラー等）した場合、`trap` により `ABORT` マーカーと失敗時刻が自動記録されます。エビデンス抽出時はサマリに `[INCOMPLETE]` として出力されます。
-
-## 設定ファイル（config/settings.env）
-
-```bash
-LOG_TYPE=syslog          # syslog | journald | file | stdout
-# LOG_FILE=/var/log/myapp/app.log   # LOG_TYPE=file 時に使用
-EXTRACT_MODE=strict      # strict | loose
-FALLBACK_LINES=500       # 終了マーカーなし時のフォールバック行数
-```
-
-すべての設定は環境変数でも上書き可能です。
-
-```bash
-LOG_TYPE=file LOG_FILE=/tmp/test.log ./run_test_with_marker.sh -n "試験名"
-```
