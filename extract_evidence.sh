@@ -79,21 +79,25 @@ extract_for_test() {
     local test_id="$1" content_file="$2" output_file="$3" source_label="$4"
     local start_line end_line abort_line actual_end incomplete=false
 
+    # test_id をgrep正規表現に安全に埋め込むためエスケープ
+    local safe_id
+    safe_id=$(printf '%s' "${test_id}" | sed 's/[]\[^$.*\\()|+?{}]/\\&/g')
+
     # 重複検出
     local dup_count
-    dup_count=$(grep -c "\[TEST_MARKER_START\].*test_id=${test_id}" "${content_file}" || true)
+    dup_count=$(grep -c "\[TEST_MARKER_START\].*test_id=${safe_id}" "${content_file}" || true)
     if [[ "${dup_count}" -gt 1 ]]; then
         log_warn "識別子 ${test_id} の開始マーカーが複数存在します（${source_label}）。最初の出現を使用します。"
     fi
 
     start_line=$(find_marker_line "${content_file}" \
-        "\[TEST_MARKER_START\].*test_id=${test_id}")
+        "\[TEST_MARKER_START\].*test_id=${safe_id}")
     [[ -z "${start_line}" ]] && return 2
 
     end_line=$(find_marker_line "${content_file}" \
-        "\[TEST_MARKER_END\].*test_id=${test_id}")
+        "\[TEST_MARKER_END\].*test_id=${safe_id}")
     abort_line=$(find_marker_line "${content_file}" \
-        "\[TEST_MARKER_ABORT\].*test_id=${test_id}")
+        "\[TEST_MARKER_ABORT\].*test_id=${safe_id}")
 
     if [[ -n "${end_line}" ]]; then
         actual_end="${end_line}"
@@ -166,8 +170,18 @@ elif [[ -n "${LOG_FILE_ARG}" ]]; then
     LOG_SOURCE_NAMES=("$(basename "${LOG_FILE_ARG}")")
 elif [[ ${#LOG_FILES[@]} -gt 0 ]]; then
     LOG_SOURCES=("${LOG_FILES[@]}")
+    # 同名ファイルがある場合は 親ディレクトリ名_ファイル名 で区別する
     for _f in "${LOG_FILES[@]}"; do
-        LOG_SOURCE_NAMES+=("$(basename "${_f}")")
+        _base=$(basename "${_f}")
+        _dup=0
+        for _g in "${LOG_FILES[@]}"; do
+            [[ "$(basename "${_g}")" == "${_base}" ]] && _dup=$((_dup + 1))
+        done
+        if [[ ${_dup} -gt 1 ]]; then
+            LOG_SOURCE_NAMES+=("$(basename "$(dirname "${_f}")")_${_base}")
+        else
+            LOG_SOURCE_NAMES+=("${_base}")
+        fi
     done
 fi
 
@@ -211,9 +225,14 @@ for _src in "${LOG_SOURCES[@]}"; do
     _tmp=$(mktemp)
     TMPLOG_FILES+=("${_tmp}")
     if [[ "${_src}" == "__journalctl__" ]]; then
-        journalctl -t TEST_MARKER --no-pager 2>/dev/null > "${_tmp}" || true
+        if ! journalctl -t TEST_MARKER --no-pager > "${_tmp}" 2>/dev/null; then
+            log_warn "journalctl の取得に失敗しました。空のログとして処理します。"
+        fi
     else
-        cat "${_src}" > "${_tmp}"
+        if ! cat "${_src}" > "${_tmp}"; then
+            log_error "ログファイルの読み込みに失敗しました: ${_src}"
+            exit 1
+        fi
     fi
 done
 
@@ -290,10 +309,13 @@ while IFS=',' read -r test_id test_name tester start_time end_time status _ev; d
     done
 
     # 試験単位の集計
-    if [[ $_test_incomplete -gt 0 ]]; then
-        INCOMPLETE=$((INCOMPLETE + 1))
-    elif [[ $_test_failed -eq ${#LOG_SOURCES[@]} ]]; then
+    # 全ソースでマーカーなし → FAILED
+    # 一部でもマーカーなし or 終了マーカーなし → INCOMPLETE
+    # 全ソース正常 → SUCCESS
+    if [[ $_test_failed -eq ${#LOG_SOURCES[@]} ]]; then
         FAILED=$((FAILED + 1))
+    elif [[ $_test_incomplete -gt 0 || $_test_failed -gt 0 ]]; then
+        INCOMPLETE=$((INCOMPLETE + 1))
     else
         SUCCESS=$((SUCCESS + 1))
     fi

@@ -104,11 +104,14 @@ init_markers_file() {
     fi
 }
 
-# 管理ファイルに 1 レコードを追記する
+# 管理ファイルに 1 レコードを追記する（カンマはCSV破壊を防ぐため除去）
 append_markers_record() {
     local test_id="$1" test_name="$2" tester="$3" start_time="$4" \
           end_time="${5:-}" status="${6:-}" evidence_file="${7:-}"
-    echo "${test_id},${test_name},${tester},${start_time},${end_time},${status},${evidence_file}" \
+    local safe_name safe_tester
+    safe_name="${test_name//,/}"
+    safe_tester="${tester//,/}"
+    echo "${test_id},${safe_name},${safe_tester},${start_time},${end_time},${status},${evidence_file}" \
         >> "${MARKERS_FILE}"
 }
 
@@ -151,7 +154,7 @@ while [[ $# -gt 0 ]]; do
         -n|--name)      TEST_NAME="$2";    shift 2 ;;
         -t|--tester)    TESTER="$2";       shift 2 ;;
         -l|--log-type)  LOG_TYPE="$2";     shift 2 ;;
-        -f|--log-file)  LOG_FILE="$2";     shift 2 ;;
+        -f|--log-file)  LOG_FILES+=("$2"); shift 2 ;;
         -m|--markers)   MARKERS_FILE="$2"; shift 2 ;;
         -h|--help)      usage; exit 0 ;;
         --)             shift; CMD_STRING="$*"; break ;;
