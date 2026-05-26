@@ -180,7 +180,7 @@ echo "  実施者   : ${TESTER}"
 echo "  開始時刻 : ${START_TIME}"
 echo "========================================"
 
-# コマンド実行
+# コマンド実行 / 手動操作待ち
 OVERALL_STATUS="OK"
 
 if [[ -n "${CMD_STRING}" ]]; then
@@ -190,6 +190,17 @@ if [[ -n "${CMD_STRING}" ]]; then
     if ! (eval "${CMD_STRING}"); then
         FAIL_TIME=$(date '+%Y-%m-%dT%H:%M:%S')
         echo "[失敗] コマンド: ${CMD_STRING}  時刻: ${FAIL_TIME}" >&2
+        OVERALL_STATUS="NG"
+    fi
+else
+    echo ""
+    echo "試験を実施してください。"
+    echo "  完了 → Enter"
+    echo "  失敗 → f + Enter"
+    echo "  中断 → Ctrl+C"
+    echo ""
+    read -r -p "> " _INPUT
+    if [[ "${_INPUT}" == "f" || "${_INPUT}" == "F" ]]; then
         OVERALL_STATUS="NG"
     fi
 fi
