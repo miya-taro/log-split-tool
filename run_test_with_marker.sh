@@ -4,13 +4,19 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="${SCRIPT_DIR}/config/settings.env"
+
+# 1. config をソース（env var > config の順で上書き）
+CONFIG_FILE="${CONFIG_FILE:-${SCRIPT_DIR}/config/settings.env}"
+LOG_FILES=()
 [[ -f "${CONFIG_FILE}" ]] && source "${CONFIG_FILE}"
 
-LOG_TYPE="${LOG_TYPE:-syslog}"
-MARKERS_FILE="${MARKERS_FILE:-${SCRIPT_DIR}/markers/test_markers.csv}"
-TESTER="${TESTER:-$(whoami)}"
-LOG_FILE="${LOG_FILE:-}"
+# 2. config にも env var にも無い場合のデフォルト値
+: "${LOG_TYPE:=syslog}"
+: "${MARKERS_FILE:=${SCRIPT_DIR}/markers/test_markers.csv}"
+: "${TESTER:=$(whoami)}"
+
+# 3. LOG_FILES が未定義でも空配列を保証
+LOG_FILES=("${LOG_FILES[@]+"${LOG_FILES[@]}"}")
 
 _TEST_ID=""
 _TEST_COMPLETED=false
@@ -58,7 +64,7 @@ generate_test_id() {
     fi
 }
 
-# ログソースにマーカー文字列を書き込む
+# ログソースにマーカー文字列を書き込む（LOG_TYPE=file 時は LOG_FILES 全件に書く）
 write_marker() {
     local message="$1"
     local ret=0
@@ -68,9 +74,15 @@ write_marker() {
             ret=$?
             ;;
         file)
-            local target="${LOG_FILE:-/tmp/test_marker.log}"
-            echo "$(date '+%Y-%m-%dT%H:%M:%S') TEST_MARKER: ${message}" >> "${target}"
-            ret=$?
+            if [[ ${#LOG_FILES[@]} -eq 0 ]]; then
+                echo "[ERROR] LOG_FILES が設定されていません。config/settings.env を確認してください。" >&2
+                return 1
+            fi
+            local ts
+            ts=$(date '+%Y-%m-%dT%H:%M:%S')
+            for target in "${LOG_FILES[@]}"; do
+                echo "${ts} TEST_MARKER: ${message}" >> "${target}" || ret=1
+            done
             ;;
         stdout|*)
             echo "$(date '+%Y-%m-%dT%H:%M:%S') TEST_MARKER: ${message}"
@@ -178,6 +190,10 @@ echo "  試験名   : ${TEST_NAME}"
 echo "  試験ID   : ${_TEST_ID}"
 echo "  実施者   : ${TESTER}"
 echo "  開始時刻 : ${START_TIME}"
+if [[ "${LOG_TYPE}" == "file" && ${#LOG_FILES[@]} -gt 0 ]]; then
+    echo "  対象ログ :"
+    for _f in "${LOG_FILES[@]}"; do echo "    - ${_f}"; done
+fi
 echo "========================================"
 
 # コマンド実行 / 手動操作待ち
